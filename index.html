@@ -1,0 +1,353 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>스네이크 게임 (HTML/JS)</title>
+  <style>
+    :root {
+      --bg: #111827; --panel: #1f2937; --snake: #34d399;
+      --snake-head: #10b981; --food: #f43f5e; --text: #e5e7eb; --accent: #60a5fa;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0; background: radial-gradient(1200px 600px at 50% -100px, #0b1220, var(--bg));
+      color: var(--text); font-family: system-ui, -apple-system, Segoe UI, Roboto, "Noto Sans KR", Arial, sans-serif;
+      display: grid; min-height: 100svh; place-items: center; padding: 16px;
+    }
+    .wrap { width: min(92vw, 720px); }
+    header { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 12px; }
+    .title { font-weight: 700; letter-spacing: 0.2px; }
+    .panel {
+      background: linear-gradient(180deg, #111827, var(--panel));
+      border: 1px solid #374151; border-radius: 12px; padding: 10px 12px;
+      display: flex; align-items: center; gap: 12px;
+      box-shadow: 0 10px 20px rgba(0,0,0,.25), inset 0 1px 0 rgba(255,255,255,.03);
+    }
+    .row { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+    .stat { font-variant-numeric: tabular-nums; }
+    .btn, select {
+      background: #0b1220; color: var(--text); border: 1px solid #334155; border-radius: 10px;
+      padding: 10px 14px; font-weight: 600; cursor: pointer;
+      transition: transform .06s ease, background .2s ease, border .2s ease;
+    }
+    .btn:hover, select:hover { background: #111a2b; border-color: #3b82f6; }
+    .btn:active { transform: translateY(1px); }
+    .board {
+      margin-top: 12px; background: #0b1220; border: 1px solid #334155; border-radius: 12px;
+      aspect-ratio: 1 / 1; width: 100%; display: grid; place-items: center; overflow: hidden; position: relative;
+    }
+    canvas { width: 100%; height: 100%; image-rendering: pixelated; }
+    .overlay {
+      position: absolute; inset: 0; display: grid; place-items: center; text-align: center;
+      background: linear-gradient(180deg, rgba(2,6,23,.3), rgba(2,6,23,.55));
+      backdrop-filter: blur(2px); opacity: 0; pointer-events: none; transition: opacity .2s ease; padding: 20px;
+    }
+    .overlay.show { opacity: 1; pointer-events: auto; }
+    .overlay .card {
+      background: #0b1220; border: 1px solid #334155; border-radius: 14px; padding: 18px;
+      max-width: 440px; width: min(90%, 440px); box-shadow: 0 20px 40px rgba(0,0,0,.35);
+    }
+    .grid { display: grid; gap: 10px; grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .grid .btn { width: 100%; }
+    .hint { color: #9ca3af; font-size: 12px; }
+    .chip { padding: 4px 8px; background: #0f172a; border: 1px solid #334155; border-radius: 999px; font-size: 12px; color: #cbd5e1; }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <header class="panel">
+      <div class="row">
+        <div class="title">🟢 스네이크</div>
+        <span class="chip">키보드 방향키</span>
+      </div>
+      <div class="row">
+        <div class="stat">점수: <strong id="score">0</strong></div>
+        <div class="stat">최고: <strong id="best">0</strong></div>
+        <select id="wallMode" title="벽 모드">
+          <option value="solid" selected>벽 충돌</option>
+          <option value="wrap">벽 통과</option>
+        </select>
+        <button id="resetBtn" class="btn">다시 시작</button>
+      </div>
+    </header>
+
+    <div class="board">
+      <canvas id="game" width="400" height="400" aria-label="스네이크 게임 보드"></canvas>
+      <div id="overlay" class="overlay">
+        <div class="card">
+          <h3 id="stateTitle" style="margin: 0 0 8px">시작하려면 ▶ 시작</h3>
+          <p id="stateDesc" class="hint" style="margin: 0 0 14px">방향키로 뱀을 움직여 먹이를 드세요.</p>
+          <div class="grid">
+            <button id="startBtn" class="btn">▶ 시작</button>
+            <button id="resumeBtn" class="btn">⏯ 계속</button>
+            <button id="restartBtn" class="btn">↺ 새 게임</button>
+            <button id="slowBtn" class="btn">🐢 느리게</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <p class="hint" style="margin-top:10px">
+      팁: <kbd>Space</kbd> 일시정지/계속 &nbsp;|&nbsp; <kbd>R</kbd> 재시작 &nbsp;|&nbsp; <kbd>W</kbd> 벽 모드 전환
+    </p>
+  </div>
+
+  <script>
+    // ===== 게임 설정 =====
+    const CELL = 20;          // 한 칸 픽셀 (20px → 20x20 그리드)
+    const SIZE = 400;         // 캔버스 크기
+    const GRID = SIZE / CELL; // 20
+    const START_LEN = 4;
+    const START_SPEED = 130;  // 낮을수록 빠름(ms)
+    const SPEED_STEP = 3;     // 먹이 먹을 때 속도 증가(감소)
+    const MIN_SPEED = 60;
+
+    // ===== 상태 =====
+    let snake, dir, nextDir, food, score, best, speed, timer, running = false, paused = true;
+    let wallMode = 'solid'; // 'solid' | 'wrap'
+
+    // ===== 엘리먼트 =====
+    const cvs = document.getElementById('game');
+    const ctx = cvs.getContext('2d');
+    const scoreEl = document.getElementById('score');
+    const bestEl = document.getElementById('best');
+    const overlay = document.getElementById('overlay');
+    const stateTitle = document.getElementById('stateTitle');
+    const stateDesc = document.getElementById('stateDesc');
+    const startBtn = document.getElementById('startBtn');
+    const resumeBtn = document.getElementById('resumeBtn');
+    const restartBtn = document.getElementById('restartBtn');
+    const slowBtn = document.getElementById('slowBtn');
+    const wallSel = document.getElementById('wallMode');
+    const resetBtn = document.getElementById('resetBtn');
+
+    // ===== 유틸 =====
+    const rng = (min, max) => Math.floor(Math.random() * (max - min + 1)) + min;
+
+    function loadBest() {
+      try { return Number(localStorage.getItem('snake_best') || 0); } catch { return 0; }
+    }
+    function saveBest(val) {
+      try { localStorage.setItem('snake_best', String(val)); } catch {}
+    }
+
+    function init() {
+      snake = [];
+      const startX = Math.floor(GRID / 2);
+      const startY = Math.floor(GRID / 2);
+
+      // 🔧 버그 수정: push로 꼬리→머리 순서로 배치 (머리가 오른쪽 끝)
+      // 예: [ (startX-3), (startX-2), (startX-1), (startX=머리) ]
+      for (let i = START_LEN - 1; i >= 0; i--) {
+        snake.push({ x: startX - i, y: startY });
+      }
+
+      dir = { x: 1, y: 0 };
+      nextDir = { x: 1, y: 0 };
+      score = 0; speed = START_SPEED;
+      best = loadBest(); bestEl.textContent = best;
+
+      placeFood();
+      draw();
+      updateScore();
+      showOverlay(true, '시작하려면 ▶ 시작', '방향키로 뱀을 움직여 먹이를 드세요.');
+      paused = true; running = false;
+    }
+
+    function placeFood() {
+      while (true) {
+        const f = { x: rng(0, GRID - 1), y: rng(0, GRID - 1) };
+        if (!snake.some(s => s.x === f.x && s.y === f.y)) { food = f; break; }
+      }
+    }
+
+    function updateScore() {
+      scoreEl.textContent = score;
+      if (score > best) { best = score; bestEl.textContent = best; saveBest(best); }
+    }
+
+    function showOverlay(show, title = '', desc = '') {
+      overlay.classList.toggle('show', show);
+      if (title) stateTitle.textContent = title;
+      if (desc !== undefined) stateDesc.textContent = desc;
+      resumeBtn.style.display = paused && running ? 'inline-block' : 'none';
+      startBtn.style.display = (!running) ? 'inline-block' : 'none';
+    }
+
+    function gameOver() {
+      running = false; paused = true;
+      showOverlay(true, '게임 종료 💥', `점수: ${score}  |  최고: ${best}`);
+      clearTimeout(timer);
+    }
+
+    function step() {
+      // 방향 업데이트 (틱당 1회)
+      dir = nextDir;
+
+      const head = { ...snake[snake.length - 1] }; // 현재 머리(마지막 요소) 기준으로 이동
+      head.x += dir.x; head.y += dir.y;
+
+      // 벽 처리
+      if (wallMode === 'wrap') {
+        head.x = (head.x + GRID) % GRID;
+        head.y = (head.y + GRID) % GRID;
+      } else {
+        if (head.x < 0 || head.x >= GRID || head.y < 0 || head.y >= GRID) return gameOver();
+      }
+
+      // 자기충돌 검사
+      if (snake.some(s => s.x === head.x && s.y === head.y)) return gameOver();
+
+      // 이동: 머리를 뒤(끝)에 붙이고 꼬리 제거
+      snake.push(head);
+
+      // 먹이
+      if (head.x === food.x && head.y === food.y) {
+        score++; updateScore(); placeFood();
+        speed = Math.max(MIN_SPEED, speed - SPEED_STEP);
+      } else {
+        snake.shift(); // 꼬리 제거
+      }
+
+      draw();
+      if (!paused) timer = setTimeout(step, speed);
+    }
+
+    function drawCell(x, y, color) {
+      ctx.fillStyle = color;
+      ctx.fillRect(x * CELL, y * CELL, CELL, CELL);
+    }
+
+    function drawGridBg() {
+      for (let y = 0; y < GRID; y++) {
+        for (let x = 0; x < GRID; x++) {
+          ctx.fillStyle = (x + y) % 2 === 0 ? '#0c1425' : '#0a1120';
+          ctx.fillRect(x * CELL, y * CELL, CELL, CELL);
+        }
+      }
+    }
+
+    function draw() {
+      ctx.clearRect(0, 0, SIZE, SIZE);
+      drawGridBg();
+
+      // 먹이
+      ctx.fillStyle = getFoodGradient(food.x, food.y);
+      const padF = 2;
+      ctx.beginPath();
+      ctx.roundRect(food.x * CELL + padF, food.y * CELL + padF, CELL - padF*2, CELL - padF*2, 4);
+      ctx.fill();
+
+      // 뱀 (꼬리→머리 순서로 그리되, 머리 강조)
+      snake.forEach((seg, i) => {
+        const isHead = (i === snake.length - 1);
+        const pad = isHead ? 2 : 3;
+        ctx.fillStyle = isHead ? getHeadGradient(seg.x, seg.y) : getBodyGradient(seg.x, seg.y);
+        ctx.beginPath();
+        ctx.roundRect(seg.x * CELL + pad, seg.y * CELL + pad, CELL - pad*2, CELL - pad*2, isHead ? 6 : 5);
+        ctx.fill();
+      });
+    }
+
+    // 그라디언트
+    function getBodyGradient(x, y) {
+      const g = ctx.createLinearGradient(x*CELL, y*CELL, x*CELL + CELL, y*CELL + CELL);
+      g.addColorStop(0, '#34d399'); g.addColorStop(1, '#059669');
+      return g;
+    }
+    function getHeadGradient(x, y) {
+      const g = ctx.createLinearGradient(x*CELL, y*CELL, x*CELL + CELL, y*CELL + CELL);
+      g.addColorStop(0, '#10b981'); g.addColorStop(1, '#0ea5e9');
+      return g;
+    }
+    function getFoodGradient(x, y) {
+      const g = ctx.createRadialGradient(x*CELL + CELL/2, y*CELL + CELL/2, 2, x*CELL + CELL/2, y*CELL + CELL/2, CELL/2);
+      g.addColorStop(0, '#f43f5e'); g.addColorStop(1, '#be123c');
+      return g;
+    }
+
+    // ===== 입력: 키보드 방향키만 지원 =====
+    const dirs = {
+      ArrowUp:    { x: 0, y: -1, opp: 'ArrowDown'  },
+      ArrowDown:  { x: 0, y:  1, opp: 'ArrowUp'    },
+      ArrowLeft:  { x: -1, y: 0, opp: 'ArrowRight' },
+      ArrowRight: { x:  1, y: 0, opp: 'ArrowLeft'  }
+    };
+
+    function setDirection(key) {
+      const d = dirs[key];
+      if (!d) return;
+      // 현재 진행방향의 반대로는 곧바로 못 돌아감
+      const curKey = Object.keys(dirs).find(k => dirs[k].x === dir.x && dirs[k].y === dir.y);
+      if (curKey && d.opp === curKey) return;
+      nextDir = { x: d.x, y: d.y };
+    }
+
+    window.addEventListener('keydown', (e) => {
+      if (dirs[e.key]) { e.preventDefault(); setDirection(e.key); if (!running) start(); }
+      if (e.code === 'Space') { e.preventDefault(); togglePause(); }
+      if (e.key.toLowerCase() === 'r') restart();
+      if (e.key.toLowerCase() === 'w') toggleWallMode();
+    }, { passive: false });
+
+    // ===== 제어 =====
+    function start() {
+      if (running && !paused) return;
+      paused = false; running = true;
+      showOverlay(false);
+      clearTimeout(timer);
+      timer = setTimeout(step, speed);
+    }
+
+    function togglePause() {
+      if (!running) return;
+      paused = !paused;
+      if (paused) {
+        clearTimeout(timer);
+        showOverlay(true, '일시정지 ⏸', '계속하려면 ⏯ 계속 을 누르세요. (Space)');
+      } else {
+        showOverlay(false);
+        timer = setTimeout(step, speed);
+      }
+    }
+
+    function restart(slower = false) {
+      init();
+      if (slower) speed = 180;
+      start();
+    }
+
+    function toggleWallMode() {
+      wallMode = (wallMode === 'solid') ? 'wrap' : 'solid';
+      wallSel.value = wallMode;
+    }
+
+    // UI 버튼
+    startBtn.addEventListener('click', start);
+    resumeBtn.addEventListener('click', togglePause);
+    restartBtn.addEventListener('click', () => restart(false));
+    slowBtn.addEventListener('click', () => restart(true));
+    wallSel.addEventListener('change', (e) => wallMode = e.target.value);
+    resetBtn.addEventListener('click', () => restart(false));
+
+    // 초기화
+    init();
+
+    // 캔버스 roundRect 폴리필(구버전 브라우저)
+    if (!CanvasRenderingContext2D.prototype.roundRect) {
+      CanvasRenderingContext2D.prototype.roundRect = function(x, y, w, h, r) {
+        r = Math.min(r, w/2, h/2);
+        this.beginPath();
+        this.moveTo(x + r, y);
+        this.arcTo(x + w, y, x + w, y + h, r);
+        this.arcTo(x + w, y + h, x, y + h, r);
+        this.arcTo(x, y + h, x, y, r);
+        this.arcTo(x, y, x + w, y, r);
+        this.closePath();
+        return this;
+      }
+    }
+  </script>
+</body>
+</html>
